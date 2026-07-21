@@ -1,0 +1,2 @@
+import SwiftData
+struct User {}
