@@ -7,7 +7,7 @@ export const DEMO_REPOSITORY = {
     {
       path: "README.md",
       content: `# TaskFlow
-
+      
 TaskFlow is a small Next.js task-management application with authenticated dashboards,
 API routes, Prisma persistence, Redis-backed task caching, and Vitest coverage.`,
     },

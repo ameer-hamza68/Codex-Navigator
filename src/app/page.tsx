@@ -10,7 +10,7 @@ export default function LandingPage() {
         </a>
         <span className="badge"><span className="mr-2 status-dot" /> Local-first analysis</span>
       </header>
-
+      
       <section className="shell grid min-h-[calc(100vh-150px)] items-center gap-16 py-16 lg:grid-cols-[1.08fr_.92fr] lg:py-20">
         <div>
           <div className="eyebrow mb-5">Evidence, not guesswork</div>
