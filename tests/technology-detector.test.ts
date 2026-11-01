@@ -147,4 +147,85 @@ describe("detectRepositoryTechnologies", () => {
     ]));
     expect(result.packageManagers.every((fact) => fact.evidence.length > 0)).toBe(true);
   });
+
+  it("does not report dev-only dependencies as the project's frameworks or databases", () => {
+    const result = detectRepositoryTechnologies([
+      {
+        path: "package.json",
+        content: JSON.stringify({ devDependencies: { express: "1", vitest: "1", sequelize: "1" } }),
+      },
+    ]);
+
+    expect(names(result.frameworks)).not.toContain("Express");
+    expect(names(result.databaseTools)).not.toContain("Sequelize");
+    expect(names(result.testTools)).toContain("Vitest");
+    expect(result.dependencies).toContainEqual({ name: "express", sourcePath: "package.json", dev: true });
+  });
+
+  it("lists dependencies once per manifest, preferring the runtime listing", () => {
+    const result = detectRepositoryTechnologies([
+      {
+        path: "package.json",
+        content: JSON.stringify({ peerDependencies: { react: "1" }, devDependencies: { react: "1", vitest: "1" } }),
+      },
+    ]);
+
+    expect(result.dependencies).toEqual([
+      { name: "react", sourcePath: "package.json", dev: false },
+      { name: "vitest", sourcePath: "package.json", dev: true },
+    ]);
+  });
+
+  it("reads PEP 621 pyproject dependency arrays without treating metadata keys as dependencies", () => {
+    const result = detectRepositoryTechnologies([
+      {
+        path: "pyproject.toml",
+        content: [
+          "[project]",
+          'name = "service"',
+          'version = "1.0"',
+          "dependencies = [",
+          '  "fastapi>=0.110",',
+          '  "uvicorn[standard]>=0.29",  # server',
+          '  "SQLAlchemy",',
+          "]",
+          "",
+          "[project.optional-dependencies]",
+          'test = ["pytest>=8"]',
+        ].join("\n"),
+      },
+      { path: "uv.lock", content: "version = 1" },
+      { path: "app/models.py", content: "from sqlalchemy.orm import Mapped" },
+    ]);
+
+    expect(result.dependencies).toEqual([
+      { name: "fastapi", sourcePath: "pyproject.toml", dev: false },
+      { name: "uvicorn", sourcePath: "pyproject.toml", dev: false },
+      { name: "sqlalchemy", sourcePath: "pyproject.toml", dev: false },
+      { name: "pytest", sourcePath: "pyproject.toml", dev: true },
+    ]);
+    expect(names(result.frameworks)).toContain("FastAPI");
+    expect(names(result.databaseTools)).toContain("SQLAlchemy");
+    expect(names(result.databaseTools)).not.toContain("Django ORM");
+    expect(names(result.testTools)).toContain("pytest");
+    expect(names(result.packageManagers)).toContain("uv");
+  });
+
+  it("reads Poetry and Pipfile dependency tables and skips the python version key", () => {
+    const result = detectRepositoryTechnologies([
+      {
+        path: "pyproject.toml",
+        content: '[tool.poetry.dependencies]\npython = "^3.12"\ndjango = "^5"\n\n[tool.poetry.group.dev.dependencies]\npytest = "^8"',
+      },
+      { path: "Pipfile", content: '[packages]\nflask = "*"\n\n[dev-packages]\nblack = "*"' },
+    ]);
+
+    expect(result.dependencies).toEqual([
+      { name: "django", sourcePath: "pyproject.toml", dev: false },
+      { name: "pytest", sourcePath: "pyproject.toml", dev: true },
+      { name: "flask", sourcePath: "Pipfile", dev: false },
+      { name: "black", sourcePath: "Pipfile", dev: true },
+    ]);
+    expect(names(result.frameworks)).toEqual(expect.arrayContaining(["Django", "Flask"]));
+  });
 });

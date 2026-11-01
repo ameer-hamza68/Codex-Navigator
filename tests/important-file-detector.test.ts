@@ -99,4 +99,26 @@ describe("detectImportantFiles", () => {
     const results = detectImportantFiles(files, technologies);
     expect(results.find((result) => result.category === "authentication")).toBeUndefined();
   });
+
+  it("ranks root README and manifest files above nested copies", () => {
+    const files = [
+      { path: "README.md", content: "# Project\nKeeps the login session and database schema in sync." },
+      { path: "pyproject.toml", content: "[project]" },
+      ...["a", "b", "c", "d"].flatMap((name) => [
+        { path: `docs/${name}.md`, content: "# Docs" },
+        { path: `examples/${name}/pyproject.toml`, content: "[project]" },
+      ]),
+    ];
+    const results = detectImportantFiles(files, detectRepositoryTechnologies(files));
+    const paths = results.map((result) => result.path);
+
+    expect(paths).toContain("README.md");
+    expect(paths).toContain("pyproject.toml");
+    expect(results.find((result) => result.path === "README.md")?.evidence).toContainEqual({
+      path: "README.md",
+      detail: "Located at the repository root",
+    });
+    // Root location must not turn a passing keyword mention into an important file.
+    expect(results.filter((result) => result.path === "README.md").map((result) => result.category)).toEqual(["documentation"]);
+  });
 });

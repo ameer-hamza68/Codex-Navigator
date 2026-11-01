@@ -20,6 +20,7 @@ const EMPTY_ANALYSIS: RepositoryAnalysis = {
   deploymentTools: [],
   ciTools: [],
   scripts: [],
+  dependencies: [],
   entryPoints: [],
   architecture: {
     mermaid: "flowchart LR",

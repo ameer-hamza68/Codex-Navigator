@@ -319,6 +319,7 @@ async function analyzeContentCandidates(
     deploymentTools: technologies.deploymentTools,
     ciTools: technologies.ciTools,
     scripts: technologies.scripts,
+    dependencies: technologies.dependencies,
     entryPoints: technologies.entryPoints,
     architecture,
     warnings,
@@ -488,7 +489,8 @@ export async function fetchPublicGitHubRepositorySizeBytes(
           accept: "application/vnd.github+json",
           "user-agent": "codex-navigator-lite",
         },
-        redirect: "error",
+        // Renamed or transferred repositories answer with a redirect to api.github.com/repositories/<id>.
+        redirect: "follow",
         signal: AbortSignal.timeout(Math.min(Math.max(1, timeoutMs), 30_000)),
       },
     );

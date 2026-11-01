@@ -113,6 +113,13 @@ export interface PackageScript {
   sourcePath: string;
 }
 
+export interface ProjectDependency {
+  name: string;
+  sourcePath: string;
+  /** True for development-only dependencies such as devDependencies or test groups. */
+  dev: boolean;
+}
+
 export interface RepositoryAnalysis {
   files: RepositoryFile[];
   tree: RepositoryTreeNode[];
@@ -126,6 +133,7 @@ export interface RepositoryAnalysis {
   deploymentTools: DetectionResult[];
   ciTools: DetectionResult[];
   scripts: PackageScript[];
+  dependencies: ProjectDependency[];
   entryPoints: DetectionResult[];
   architecture: ArchitectureDiagram;
   warnings: string[];

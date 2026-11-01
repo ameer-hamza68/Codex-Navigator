@@ -34,6 +34,7 @@ const SCORE = {
   folderName: 18,
   import: 16,
   exportedSymbol: 14,
+  repositoryRoot: 15,
   technology: 8,
 } as const;
 
@@ -226,6 +227,10 @@ function scoreFile(
 
   if (rule.exactFileNames?.some((name) => name.toLowerCase() === baseName)) {
     evidence.push({ path: normalizedPath, detail: `Exact filename ${path.posix.basename(normalizedPath)}`, points: SCORE.exactFileName });
+    // A root README or manifest describes the whole project, so it should outrank nested copies.
+    if (folders.length === 0) {
+      evidence.push({ path: normalizedPath, detail: "Located at the repository root", points: SCORE.repositoryRoot });
+    }
   }
   if (rule.pathPatterns?.some((pattern) => matches(pattern, lowerPath))) {
     evidence.push({ path: normalizedPath, detail: "Matches a common framework or project convention", points: SCORE.frameworkConvention });

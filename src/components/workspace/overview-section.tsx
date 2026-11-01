@@ -14,7 +14,10 @@ export function OverviewSection({ workspace }: Readonly<{ workspace: RepositoryW
     ...analysis.databaseTools,
     ...analysis.authenticationTools,
     ...analysis.deploymentTools,
+    ...analysis.ciTools,
   ];
+  const runtimeDependencies = analysis.dependencies.filter((dependency) => !dependency.dev);
+  const devDependencies = analysis.dependencies.filter((dependency) => dependency.dev);
 
   return (
     <section aria-labelledby="overview-title">
@@ -55,7 +58,38 @@ export function OverviewSection({ workspace }: Readonly<{ workspace: RepositoryW
           </div>
         )}
       </div>
+
+      <div className="panel mt-4 p-5">
+        <h3 className="mb-4 text-sm font-semibold">Dependencies</h3>
+        {analysis.dependencies.length === 0 ? <p className="m-0 text-sm text-slate-600">No dependency manifests detected.</p> : (
+          <div className="grid gap-4 md:grid-cols-2">
+            <DependencyList title="Runtime" items={runtimeDependencies} />
+            <DependencyList title="Development" items={devDependencies} />
+          </div>
+        )}
+      </div>
     </section>
+  );
+}
+
+const MAX_LISTED_DEPENDENCIES = 40;
+
+function DependencyList({ title, items }: Readonly<{ title: string; items: RepositoryWorkspaceResponse["analysis"]["dependencies"] }>) {
+  // The same package can be declared by several manifests in a monorepo; show it once.
+  const sourcesByName = new Map<string, string[]>();
+  for (const item of items) sourcesByName.set(item.name, [...(sourcesByName.get(item.name) ?? []), item.sourcePath]);
+  const names = [...sourcesByName.keys()];
+  const hidden = names.length - MAX_LISTED_DEPENDENCIES;
+  return (
+    <div>
+      <div className="mb-2 text-[10px] uppercase tracking-wider text-slate-600">{title} · {names.length}</div>
+      {names.length === 0 ? <p className="m-0 text-sm text-slate-600">None detected.</p> : (
+        <div className="flex flex-wrap gap-2">
+          {names.slice(0, MAX_LISTED_DEPENDENCIES).map((name) => <span className="badge mono" key={name} title={sourcesByName.get(name)?.join(", ")}>{name}</span>)}
+          {hidden > 0 && <span className="text-xs text-slate-600">+{hidden} more</span>}
+        </div>
+      )}
+    </div>
   );
 }
 

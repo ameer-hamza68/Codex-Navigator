@@ -203,7 +203,7 @@ describe("fetchPublicGitHubRepositorySizeBytes", () => {
 
     expect(fetchImplementation).toHaveBeenCalledWith(
       "https://api.github.com/repos/example/public-repository",
-      expect.objectContaining({ redirect: "error" }),
+      expect.objectContaining({ redirect: "follow" }),
     );
   });
 });

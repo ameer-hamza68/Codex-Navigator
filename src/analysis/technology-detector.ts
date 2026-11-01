@@ -5,6 +5,7 @@ import type {
   DetectionEvidence,
   DetectionResult,
   PackageScript,
+  ProjectDependency,
 } from "../domain/repository-analysis";
 
 export interface SafeRepositorySourceFile {
@@ -23,6 +24,7 @@ export interface TechnologyDetection {
   deploymentTools: DetectionResult[];
   ciTools: DetectionResult[];
   scripts: PackageScript[];
+  dependencies: ProjectDependency[];
   entryPoints: DetectionResult[];
 }
 
@@ -38,11 +40,6 @@ interface MatchRule {
   fileNames?: readonly string[];
   pathPatterns?: readonly RegExp[];
   contentPatterns?: readonly RegExp[];
-}
-
-interface DependencyEvidence {
-  name: string;
-  path: string;
 }
 
 const MAX_EVIDENCE_PER_FACT = 5;
@@ -87,6 +84,7 @@ export const PACKAGE_MANAGER_RULES: readonly MatchRule[] = [
   { name: "Bun", fileNames: ["bun.lock", "bun.lockb"] },
   { name: "pip", fileNames: ["requirements.txt", "requirements-dev.txt", "pipfile", "pipfile.lock"] },
   { name: "Poetry", fileNames: ["poetry.lock"], contentPatterns: [/^\s*\[tool\.poetry\]/mu] },
+  { name: "uv", fileNames: ["uv.lock"] },
   { name: "Swift Package Manager", fileNames: ["package.swift", "package.resolved"] },
   { name: "Gradle", fileNames: ["build.gradle", "build.gradle.kts", "gradlew", "gradlew.bat", "settings.gradle", "settings.gradle.kts"] },
   { name: "Maven", fileNames: ["pom.xml", "mvnw", "mvnw.cmd"] },
@@ -110,7 +108,7 @@ export const DATABASE_TOOL_RULES: readonly MatchRule[] = [
   { name: "Drizzle ORM", dependencies: ["drizzle-orm"], fileNames: ["drizzle.config.ts"] },
   { name: "Sequelize", dependencies: ["sequelize"] },
   { name: "TypeORM", dependencies: ["typeorm"] },
-  { name: "Django ORM", dependencies: ["django"], pathPatterns: [/(?:^|\/)models\.py$/u] },
+  { name: "Django ORM", dependencies: ["django"], contentPatterns: [/\bfrom\s+django\.db\b/u] },
   { name: "SQLAlchemy", dependencies: ["sqlalchemy"], contentPatterns: [/\bfrom\s+sqlalchemy\b/u] },
   { name: "Hibernate", dependencies: ["hibernate-core", "spring-boot-starter-data-jpa"], contentPatterns: [/\borg\.hibernate\b/u] },
   { name: "Laravel Eloquent", dependencies: ["laravel/framework"], contentPatterns: [/Illuminate\\Database\\Eloquent/u] },
@@ -169,17 +167,20 @@ export function detectRepositoryTechnologies(
     content: file.content,
   }));
   const dependencies = collectDependencies(normalizedFiles);
+  // Dev-only dependencies (test servers, build tools) must not define the project's stack.
+  const runtimeDependencies = dependencies.filter((dependency) => !dependency.dev);
 
   return {
     languages: detectLanguages(normalizedFiles),
-    frameworks: applyRules(FRAMEWORK_RULES, normalizedFiles, dependencies),
+    frameworks: applyRules(FRAMEWORK_RULES, normalizedFiles, runtimeDependencies),
     packageManagers: applyRules(PACKAGE_MANAGER_RULES, normalizedFiles, dependencies),
     testTools: applyRules(TEST_TOOL_RULES, normalizedFiles, dependencies),
-    databaseTools: applyRules(DATABASE_TOOL_RULES, normalizedFiles, dependencies),
-    authenticationTools: applyRules(AUTHENTICATION_RULES, normalizedFiles, dependencies),
+    databaseTools: applyRules(DATABASE_TOOL_RULES, normalizedFiles, runtimeDependencies),
+    authenticationTools: applyRules(AUTHENTICATION_RULES, normalizedFiles, runtimeDependencies),
     deploymentTools: applyRules(DEPLOYMENT_RULES, normalizedFiles, dependencies),
     ciTools: applyRules(CI_RULES, normalizedFiles, dependencies),
     scripts: detectPackageScripts(normalizedFiles),
+    dependencies,
     entryPoints: applyRules(ENTRY_POINT_RULES, normalizedFiles, dependencies),
   };
 }
@@ -198,7 +199,7 @@ function detectLanguages(files: readonly SafeRepositorySourceFile[]): DetectionR
 function applyRules(
   rules: readonly MatchRule[],
   files: readonly SafeRepositorySourceFile[],
-  dependencies: readonly DependencyEvidence[],
+  dependencies: readonly ProjectDependency[],
 ): DetectionResult[] {
   return rules.flatMap((rule) => {
     const evidence = collectRuleEvidence(rule, files, dependencies).slice(0, MAX_EVIDENCE_PER_FACT);
@@ -211,14 +212,14 @@ function applyRules(
 function collectRuleEvidence(
   rule: MatchRule,
   files: readonly SafeRepositorySourceFile[],
-  dependencies: readonly DependencyEvidence[],
+  dependencies: readonly ProjectDependency[],
 ): DetectionEvidence[] {
   const evidence: DetectionEvidence[] = [];
   const dependencyNames = new Set(rule.dependencies?.map((name) => name.toLowerCase()) ?? []);
 
   for (const dependency of dependencies) {
     if (dependencyNames.has(dependency.name.toLowerCase())) {
-      evidence.push({ path: dependency.path, detail: `Dependency ${dependency.name}` });
+      evidence.push({ path: dependency.sourcePath, detail: `Dependency ${dependency.name}` });
     }
   }
 
@@ -239,17 +240,17 @@ function collectRuleEvidence(
   return deduplicateEvidence(evidence);
 }
 
-function collectDependencies(files: readonly SafeRepositorySourceFile[]): DependencyEvidence[] {
-  const dependencies: DependencyEvidence[] = [];
+function collectDependencies(files: readonly SafeRepositorySourceFile[]): ProjectDependency[] {
+  const dependencies: ProjectDependency[] = [];
 
   for (const file of files) {
     const baseName = path.posix.basename(file.path).toLowerCase();
     if (baseName === "package.json" || baseName === "composer.json") {
       dependencies.push(...readJsonDependencies(file));
     } else if (baseName === "requirements.txt" || baseName === "requirements-dev.txt") {
-      dependencies.push(...readRequirementDependencies(file));
+      dependencies.push(...readRequirementDependencies(file, baseName === "requirements-dev.txt"));
     } else if (baseName === "pyproject.toml" || baseName === "pipfile") {
-      dependencies.push(...readTomlLikeDependencies(file));
+      dependencies.push(...readPythonTomlDependencies(file));
     } else if (baseName === "gemfile") {
       dependencies.push(...readGemfileDependencies(file));
     } else if (baseName === "cargo.toml") {
@@ -261,18 +262,19 @@ function collectDependencies(files: readonly SafeRepositorySourceFile[]): Depend
     }
   }
 
-  return dependencies;
+  return deduplicateDependencies(dependencies);
 }
 
-function readJsonDependencies(file: SafeRepositorySourceFile): DependencyEvidence[] {
+function readJsonDependencies(file: SafeRepositorySourceFile): ProjectDependency[] {
   try {
     const parsed: unknown = JSON.parse(file.content);
     if (!isRecord(parsed)) return [];
     const sections = ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies", "require", "require-dev"];
     return sections.flatMap((section) => {
       const value = parsed[section];
+      const dev = section === "devDependencies" || section === "require-dev";
       return isRecord(value)
-        ? Object.keys(value).map((name) => ({ name: name.toLowerCase(), path: file.path }))
+        ? Object.keys(value).map((name) => ({ name: name.toLowerCase(), sourcePath: file.path, dev }))
         : [];
     });
   } catch {
@@ -280,52 +282,118 @@ function readJsonDependencies(file: SafeRepositorySourceFile): DependencyEvidenc
   }
 }
 
-function readRequirementDependencies(file: SafeRepositorySourceFile): DependencyEvidence[] {
+function readRequirementDependencies(file: SafeRepositorySourceFile, dev: boolean): ProjectDependency[] {
   return file.content.split(/\r?\n/u).flatMap((line) => {
     const match = /^\s*([a-zA-Z0-9_.-]+)(?:\[[^\]]+\])?(?:\s*[<>=!~].*)?$/u.exec(line.split("#", 1)[0] ?? "");
-    return match?.[1] ? [{ name: match[1].toLowerCase(), path: file.path }] : [];
+    return match?.[1] ? [{ name: match[1].toLowerCase(), sourcePath: file.path, dev }] : [];
   });
 }
 
-function readTomlLikeDependencies(file: SafeRepositorySourceFile): DependencyEvidence[] {
-  return file.content.split(/\r?\n/u).flatMap((line) => {
-    const quoted = /^\s*["']?([a-zA-Z0-9_.-]+)["']?\s*(?:=|[<>=!~])/u.exec(line);
-    return quoted?.[1] ? [{ name: quoted[1].toLowerCase(), path: file.path }] : [];
-  });
+/**
+ * Reads pyproject.toml (PEP 621 and Poetry) and Pipfile dependencies. PEP 621 lists dependencies as
+ * arrays of requirement strings; Poetry and Pipfile use one `name = version` key per dependency.
+ */
+function readPythonTomlDependencies(file: SafeRepositorySourceFile): ProjectDependency[] {
+  const dependencies: ProjectDependency[] = [];
+  let section = "";
+  let openArrayDev: boolean | null = null;
+
+  const addRequirements = (text: string, dev: boolean) => {
+    for (const match of text.matchAll(/(["'])(.*?)\1/gu)) {
+      const name = /^\s*([a-zA-Z0-9][a-zA-Z0-9_.-]*)/u.exec(match[2] ?? "")?.[1];
+      if (name !== undefined) dependencies.push({ name: name.toLowerCase(), sourcePath: file.path, dev });
+    }
+  };
+  // Brackets inside strings such as "uvicorn[standard]" must not close the array.
+  const closesArray = (text: string) => text.replace(/(["']).*?\1/gu, "").includes("]");
+
+  for (const rawLine of file.content.split(/\r?\n/u)) {
+    const line = rawLine.split("#", 1)[0] ?? "";
+    if (openArrayDev !== null) {
+      addRequirements(line, openArrayDev);
+      if (closesArray(line)) openArrayDev = null;
+      continue;
+    }
+
+    const header = /^\s*\[([^\]]+)\]\s*$/u.exec(line)?.[1];
+    if (header !== undefined) {
+      section = header.trim().toLowerCase();
+      continue;
+    }
+
+    const entry = /^\s*["']?([a-zA-Z0-9_.-]+)["']?\s*=\s*(.*)$/u.exec(line);
+    if (entry === null) continue;
+    const key = (entry[1] ?? "").toLowerCase();
+    const value = entry[2] ?? "";
+
+    const arrayDev = section === "project" && key === "dependencies" ? false
+      : section === "project.optional-dependencies" || section === "dependency-groups" ? true
+        : null;
+    if (arrayDev !== null && value.trimStart().startsWith("[")) {
+      addRequirements(value, arrayDev);
+      if (!closesArray(value)) openArrayDev = arrayDev;
+      continue;
+    }
+
+    const tableDev = section === "tool.poetry.dependencies" || section === "packages" ? false
+      : section === "tool.poetry.dev-dependencies" || section === "dev-packages" ||
+        /^tool\.poetry\.group\.[^.]+\.dependencies$/u.test(section) ? true
+        : null;
+    if (tableDev !== null && key !== "python") {
+      dependencies.push({ name: key, sourcePath: file.path, dev: tableDev });
+    }
+  }
+
+  return dependencies;
 }
 
-function readGemfileDependencies(file: SafeRepositorySourceFile): DependencyEvidence[] {
+function readGemfileDependencies(file: SafeRepositorySourceFile): ProjectDependency[] {
   return [...file.content.matchAll(/^\s*gem\s+["']([^"']+)["']/gmu)].map((match) => ({
     name: (match[1] ?? "").toLowerCase(),
-    path: file.path,
+    sourcePath: file.path,
+    dev: false,
   }));
 }
 
-function readCargoDependencies(file: SafeRepositorySourceFile): DependencyEvidence[] {
-  const dependencySections = extractTomlSections(file.content, ["dependencies", "dev-dependencies", "build-dependencies"]);
-  return dependencySections.flatMap((section) =>
-    section.split(/\r?\n/u).flatMap((line) => {
-      const match = /^\s*([a-zA-Z0-9_-]+)\s*=/u.exec(line);
-      return match?.[1] ? [{ name: match[1].toLowerCase(), path: file.path }] : [];
-    }),
+function readCargoDependencies(file: SafeRepositorySourceFile): ProjectDependency[] {
+  const sections = [["dependencies", false], ["build-dependencies", false], ["dev-dependencies", true]] as const;
+  return sections.flatMap(([sectionName, dev]) =>
+    extractTomlSections(file.content, [sectionName]).flatMap((section) =>
+      section.split(/\r?\n/u).flatMap((line) => {
+        const match = /^\s*([a-zA-Z0-9_-]+)\s*=/u.exec(line);
+        return match?.[1] ? [{ name: match[1].toLowerCase(), sourcePath: file.path, dev }] : [];
+      }),
+    ),
   );
 }
 
-function readJvmDependencies(file: SafeRepositorySourceFile): DependencyEvidence[] {
+function readJvmDependencies(file: SafeRepositorySourceFile): ProjectDependency[] {
   const names = new Set<string>();
   for (const match of file.content.matchAll(/<artifactId>([^<]+)<\/artifactId>/gu)) names.add((match[1] ?? "").toLowerCase());
   for (const match of file.content.matchAll(/["']([a-zA-Z0-9_.-]+):([a-zA-Z0-9_.-]+):[^"']+["']/gu)) {
     names.add((match[1] ?? "").toLowerCase());
     names.add((match[2] ?? "").toLowerCase());
   }
-  return [...names].map((name) => ({ name, path: file.path }));
+  return [...names].map((name) => ({ name, sourcePath: file.path, dev: false }));
 }
 
-function readDotNetDependencies(file: SafeRepositorySourceFile): DependencyEvidence[] {
+function readDotNetDependencies(file: SafeRepositorySourceFile): ProjectDependency[] {
   return [...file.content.matchAll(/<PackageReference\s+Include=["']([^"']+)["']/gu)].map((match) => ({
     name: (match[1] ?? "").toLowerCase(),
-    path: file.path,
+    sourcePath: file.path,
+    dev: false,
   }));
+}
+
+/** Keeps one entry per manifest and name; a runtime listing wins over a dev listing of the same package. */
+function deduplicateDependencies(dependencies: readonly ProjectDependency[]): ProjectDependency[] {
+  const byKey = new Map<string, ProjectDependency>();
+  for (const dependency of dependencies) {
+    const key = `${dependency.sourcePath}\0${dependency.name}`;
+    const existing = byKey.get(key);
+    if (existing === undefined || existing.dev && !dependency.dev) byKey.set(key, dependency);
+  }
+  return [...byKey.values()];
 }
 
 function detectPackageScripts(files: readonly SafeRepositorySourceFile[]): PackageScript[] {
