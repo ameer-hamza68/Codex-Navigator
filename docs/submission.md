@@ -23,6 +23,7 @@ The application does not use a runtime AI service, semantic embeddings, or autom
 - Path, size, file-count, binary, generated-folder, dependency-folder, secret-name, and high-confidence credential filtering.
 - Temporary workspace cleanup and a single-import resource gate.
 - Language, framework, package-manager, test, database, authentication, deployment, CI, script, and entry-point detection.
+- Runtime and development dependency lists parsed from npm, Composer, pip, pyproject (PEP 621 and Poetry), Pipfile, Cargo, Bundler, Maven, Gradle, and .NET manifests. Stack detection uses runtime dependencies only.
 - Evidence-backed important-file ranking and bounded safe excerpts.
 - Sanitized Mermaid architecture rendering with a folder fallback.
 - Deterministic repository search with confidence, ranking reasons, and line-numbered excerpts.
